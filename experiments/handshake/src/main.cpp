@@ -36,15 +36,66 @@ uint32_t turnUs=0;
 uint16_t sentSeq=0, lastRx=0, session=0;
 bool haveRx=false, awaiting=false;
 wire::Frame outgoing{};
-char logBuffer[256]; size_t logLength=0, logPosition=0;
-// Single bounded log slot: drop rather than block when the UART is busy.
+char logBuffer[1024]; size_t logLength=0, logPosition=0;
+// One bounded slot holds the original compact line plus its human explanation.
+// Drop the pair rather than block when the UART is busy.
 void event(const char *name, const wire::Frame &f={}, int crc=-1, int rssi=0,int lqi=0,int fifo=-1) {
   if(logPosition<logLength) return;
   int n=snprintf(logBuffer,sizeof(logBuffer),
     "%lu %c s=%u %s tx=%lu rx=%lu t=%u seq=%u ack=%u crc=%d rssi=%d lqi=%d dt=%lu turn_us=%lu miss=%lu retry=%lu err=%lu dup=%lu fifo=%d\n",
     millis(),self==1?'A':'B',unsigned(state),name,effective(txHz),effective(rxHz),f.type,f.seq,f.ack,
     crc,rssi,lqi,millis()-sentAt,turnUs,missed,retries,errors,duplicates,fifo);
-  logLength=n<0?0:size_t(n)<sizeof(logBuffer)?size_t(n):sizeof(logBuffer)-1; logPosition=0;
+  logLength=n<0?0:size_t(n)<sizeof(logBuffer)?size_t(n):sizeof(logBuffer)-1;
+  char explanation[640];
+  const char *message=f.type==wire::Ping?"PING":"PONG_PING";
+  char peer=self==1?'B':'A';
+  if (!strcmp(name,"ready")) {
+    snprintf(explanation,sizeof(explanation),
+      "Radio ready (PARTNUM=0x%02x VERSION=0x%02x). TX=%lu Hz, RX=%lu Hz. %s",
+      f.src,f.dst,effective(txHz),effective(rxHz),self==1?
+      "Initiator: preparing the first PING after 100 ms.":
+      "Responder: listening for A; will not transmit until a valid request arrives.");
+  } else if (!strcmp(name,"tx")) {
+    snprintf(explanation,sizeof(explanation),
+      "Sent %s to %c: sequence=%u, ack=%u%s. Now listening on %lu Hz for sequence=%u, ack=%u (timeout %u ms).",
+      message,peer,f.seq,f.ack,f.type==wire::Ping?" (none)":"",
+      effective(rxHz),wire::next(f.seq),f.seq,unsigned(REPLY_TIMEOUT_MS));
+  } else if (!strcmp(name,"rx")) {
+    uint32_t now=millis();
+    uint32_t spacing=lastTx && uint32_t(now-lastTx)<2000?2000-uint32_t(now-lastTx):0;
+    uint32_t delayMs=spacing>TURNAROUND_DELAY_MS?spacing:TURNAROUND_DELAY_MS;
+    snprintf(explanation,sizeof(explanation),
+      "Accepted %s from %c: sequence=%u, ack=%u; CRC OK, RSSI=%d dBm, LQI=%d. Preparing PONG_PING sequence=%u, ack=%u in at least %lu ms (turnaround and TX spacing).",
+      message,peer,f.seq,f.ack,rssi,lqi,wire::next(f.seq),f.seq,delayMs);
+  } else if (!strcmp(name,"timeout")) {
+    snprintf(explanation,sizeof(explanation),
+      "No valid reply within %u ms; missed replies=%lu. %s Retry interval=%u ms; retry count=%lu.",
+      unsigned(REPLY_TIMEOUT_MS),missed,self==1?
+      "Waiting the retry interval before a fresh PING to realign B.":
+      "Returning to LISTEN on A's frequency; waiting for a new request.",unsigned(RETRY_INTERVAL_MS),retries);
+  } else if (!strcmp(name,"radio-error")) {
+    snprintf(explanation,sizeof(explanation),
+      "Radio operation failed (SPI/state/FIFO/TX deadline); errors=%lu. Reinitializing in 1000 ms.",errors);
+  } else if (!strcmp(name,"test-ended")) {
+    snprintf(explanation,sizeof(explanation),
+      "The %u ms bench window has ended. No more transmissions will be scheduled; reset both boards to repeat. Missed=%lu, retries=%lu, radio errors=%lu, duplicates=%lu.",
+      unsigned(TEST_DURATION_MS),missed,retries,errors,duplicates);
+  } else {
+    const char *reason=!strcmp(name,"reject-size")?"unexpected FIFO byte count (expected 11); CRC/RSSI unavailable":
+      !strcmp(name,"reject-length")?"payload length is not 8":
+      !strcmp(name,"reject-crc")?"hardware CRC check failed":
+      "version/type/address or sequence/ack mismatch, or duplicate packet";
+    snprintf(explanation,sizeof(explanation),
+      "Packet rejected: %s. FIFO bytes=%d; expected reply sequence=%u, ack=%u. RX rearmed; no reply scheduled for this packet.",
+      reason,fifo,wire::next(sentSeq),sentSeq);
+  }
+  n=snprintf(logBuffer+logLength,sizeof(logBuffer)-logLength,
+    "[%lu ms] Node %c: %s\n",millis(),self==1?'A':'B',explanation);
+  if(n>0) {
+    size_t room=sizeof(logBuffer)-logLength;
+    logLength+=size_t(n)<room?size_t(n):room-1;
+  }
+  logPosition=0;
 }
 void pumpLog() {
   size_t room=Serial.availableForWrite(), left=logLength-logPosition;

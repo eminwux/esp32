@@ -135,7 +135,16 @@ hardware fault cannot be made RF-safe solely by firmware.
 Compact UART events include role/state, frequencies, type/seq/ack, CRC,
 RSSI dBm estimate (raw signed value / 2 - 74), LQI, response elapsed ms,
 latest tune/calibration latency in us, misses, retries, errors and duplicates.
-One bounded log slot drops events when busy. UART writes use only reported
+Each compact event is followed by a plain-language `Node A:` or `Node B:`
+explanation of the action, next expected packet and recovery behavior.
+For example:
+
+```text
+[124 ms] Node A: Sent PING to B: sequence=0, ack=65535 (none). Now listening on 433528259 Hz for sequence=1, ack=0 (timeout 6000 ms).
+```
+
+The original compact fields remain available for parsing. One bounded 1 KiB
+log slot holds both lines and drops the pair when busy. UART writes use only reported
 available buffer space, after servicing the radio; log congestion must not
 hold up a reply. State values follow the enum in main.cpp; `dt` is elapsed
 since the last TX, not a synchronized one-way latency measurement.
