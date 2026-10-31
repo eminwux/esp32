@@ -10,6 +10,7 @@ experiment IDs; `base` identifies the formerly unsuffixed example.
 | [3](experiments/3/) | LED blink and serial output | `esp32dev` | Arduino |
 | [4](experiments/4/) | CC1101 SPI VERSION register check | `esp32dev` | Arduino SPI |
 | [5](experiments/5/) | CC1101 OOK pulse generator with calibration | `esp32_a`, `esp32_b` | Arduino SPI |
+| [handshake](experiments/handshake/) | Direct-register CC1101 dual-frequency handshake | `esp32_a`, `esp32_b` | Arduino SPI |
 | [pong](experiments/pong/) | Two-node CC1101 ping/pong | `esp32_a`, `esp32_b` | RadioLib |
 
 ## Build, upload, and monitor
