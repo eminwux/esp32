@@ -1,0 +1,62 @@
+[
+  {
+    "original": "main.cpp",
+    "current": "experiments/base/src/main.cpp",
+    "sha256": "8753f0724289086524b0bdc87655cfe62c8b19b790a48170cc395b8bb3da7cb9"
+  },
+  {
+    "original": "main3.cpp",
+    "current": "experiments/3/src/main.cpp",
+    "sha256": "b044ce71c52b6a754b96405e7ac70b9e75901d2f95cd1c282b5ca63aee7a564a"
+  },
+  {
+    "original": "main4.cpp",
+    "current": "experiments/4/src/main.cpp",
+    "sha256": "949308e22986fa3c00cd7f0d236ed828e06cfaf3c3a063894f237b8932118878"
+  },
+  {
+    "original": "main_5.cpp",
+    "current": "experiments/5/src/main.cpp",
+    "sha256": "192ba21aef43a770e31e94934199f4f8dd47b8ef3ea54e710905277de4a30af6"
+  },
+  {
+    "original": "main_pong.cpp",
+    "current": "experiments/pong/src/main.cpp",
+    "sha256": "2ea109b1436085142be7c01c282fcc9e051ff273490d564702b6511c8aa9e205"
+  },
+  {
+    "original": "platformio_5.ini",
+    "current": "experiments/5/platformio.ini",
+    "sha256": "4a72ff8aab7ec180376c4009b9184a41a19194215df51999bbfdb0a73eb0521e"
+  },
+  {
+    "original": "platformio_pong.ini",
+    "current": "experiments/pong/platformio.ini",
+    "sha256": "5432d237632aa6fd8ccc7e2236f335fe91eb4806dd64609d8bed7f799df4f3dc"
+  },
+  {
+    "original": "src/main.cpp",
+    "current": "archive/original-layout/src/main.cpp",
+    "sha256": "192ba21aef43a770e31e94934199f4f8dd47b8ef3ea54e710905277de4a30af6"
+  },
+  {
+    "original": "platformio.ini",
+    "current": "archive/original-layout/platformio.ini",
+    "sha256": "4a72ff8aab7ec180376c4009b9184a41a19194215df51999bbfdb0a73eb0521e"
+  },
+  {
+    "original": "include/README",
+    "current": "archive/original-layout/include/README",
+    "sha256": "347170baf5c3013f398bc0f83fa43903acaab07248acd231663644535d229f88"
+  },
+  {
+    "original": "lib/README",
+    "current": "archive/original-layout/lib/README",
+    "sha256": "bb872e3005f9eb9c4bdaa38bd69dc935a4455e6c6982efb2d45161deb44f99f9"
+  },
+  {
+    "original": "test/README",
+    "current": "archive/original-layout/test/README",
+    "sha256": "aba0a4b9df0b0d2e17eb6b17c327aa764f9d2d4f6fb7620a6e2436689a333962"
+  }
+]
