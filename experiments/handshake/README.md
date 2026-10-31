@@ -51,7 +51,10 @@ MDMCFG1=22 (four preamble bytes, no FEC), DEVIATN=35,
 MCSM1=00 (RX/TX finish in IDLE, CCA disabled), MCSM0=08 (manual calibration),
 FREND1/0=56/10, PATABLE[0]=12 (approximately -30 dBm at 433 MHz).
 GDO0 is available for a logic analyzer; firmware polls MARCSTATE and FIFO
-counts instead. No interrupts or software-generated RF waveform are used.
+counts instead. MARCSTATE and FIFO counts require consecutive matching reads
+(with a bounded retry count) for the TI SPI status synchronization erratum.
+The RX state is sampled before RXBYTES so a packet finishing between SPI
+transactions cannot pair IDLE with a stale partial FIFO count. No interrupts or software-generated RF waveform are used.
 
 With a 26 MHz crystal the symbol rate is about 38.383 kbaud, deviation
 20.63 kHz, RX filter bandwidth 101.56 kHz. These settings must match on both
@@ -168,6 +171,21 @@ Host codec regression check (does not verify hardware or scheduling):
 c++ -std=c++11 -Wall -Wextra -Werror experiments/handshake/test/protocol.cpp -o /tmp/handshake-protocol
 /tmp/handshake-protocol
 ```
+
+Status-read ordering regression (scripted SPI values, not an RF test):
+
+```sh
+c++ -std=c++11 -Wall -Wextra -Werror experiments/handshake/test/status.cpp -o /tmp/handshake-status
+/tmp/handshake-status
+```
+
+Reject events distinguish `reject-size`, `reject-length`, `reject-crc` and
+`reject-protocol`, and include `fifo=`. CRC=-1 means no status bytes were read;
+RSSI/LQI are unavailable in that case. An earlier firmware version read RXBYTES
+before MARCSTATE and could discard a completed packet using a partial count;
+its size rejects misleadingly displayed CRC=0 and RSSI=-74 placeholders.
+See [TI CC1101 silicon errata SWRZ020E](https://www.ti.com/lit/er/swrz020e/swrz020e.pdf)
+for SPI read synchronization constraints.
 
 Hardware SPI reliability, retuning, same-frequency operation, recovery and RF
 compliance remain unverified until the above checks run on real boards.

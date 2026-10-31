@@ -1,5 +1,6 @@
 #include "radio.h"
 #include "protocol.h"
+#include "status.h"
 #if defined(NODE_ROLE_A) == defined(NODE_ROLE_B)
 #error Select exactly one node role
 #endif
@@ -37,12 +38,12 @@ bool haveRx=false, awaiting=false;
 wire::Frame outgoing{};
 char logBuffer[256]; size_t logLength=0, logPosition=0;
 // Single bounded log slot: drop rather than block when the UART is busy.
-void event(const char *name, const wire::Frame &f={}, int crc=-1, int rssi=0,int lqi=0) {
+void event(const char *name, const wire::Frame &f={}, int crc=-1, int rssi=0,int lqi=0,int fifo=-1) {
   if(logPosition<logLength) return;
   int n=snprintf(logBuffer,sizeof(logBuffer),
-    "%lu %c s=%u %s tx=%lu rx=%lu t=%u seq=%u ack=%u crc=%d rssi=%d lqi=%d dt=%lu turn_us=%lu miss=%lu retry=%lu err=%lu dup=%lu\n",
+    "%lu %c s=%u %s tx=%lu rx=%lu t=%u seq=%u ack=%u crc=%d rssi=%d lqi=%d dt=%lu turn_us=%lu miss=%lu retry=%lu err=%lu dup=%lu fifo=%d\n",
     millis(),self==1?'A':'B',unsigned(state),name,effective(txHz),effective(rxHz),f.type,f.seq,f.ack,
-    crc,rssi,lqi,millis()-sentAt,turnUs,missed,retries,errors,duplicates);
+    crc,rssi,lqi,millis()-sentAt,turnUs,missed,retries,errors,duplicates,fifo);
   logLength=n<0?0:size_t(n)<sizeof(logBuffer)?size_t(n):sizeof(logBuffer)-1; logPosition=0;
 }
 void pumpLog() {
@@ -88,7 +89,7 @@ void loop() {
   }
   if(state==TRANSMITTING) {
     uint8_t marc,bytes;
-    if(!radio.status(0x35,marc)||!radio.status(0x3a,bytes)) { fail(); return; }
+    if(!stableStatus(radio,0x35,marc)||!stableStatus(radio,0x3a,bytes)) { fail(); return; }
     if((bytes&0x80)||(marc&31)==22) { fail(); return; }
     if((marc&31)==1 && (bytes&0x7f)==0) {
       if(!receiveMode()) { fail(); return; }
@@ -97,12 +98,13 @@ void loop() {
   }
   if(state==LISTEN||state==WAIT_REPLY||state==SEND_PONG_PING) {
     uint8_t bytes,marc;
-    if(!radio.status(0x3b,bytes)||!radio.status(0x35,marc)) { fail(); return; }
+    if(!rxSnapshot(radio,marc,bytes)) { fail(); return; }
     if((bytes&0x80)||(marc&31)==17) { fail(); return; }
     // RXOFF_MODE=IDLE: inspect FIFO only after complete packet, never at sync rise.
     if((marc&31)==1 && (bytes&0x7f)) {
       uint8_t data[11]={}; wire::Frame frame{};
-      bool valid=(bytes&0x7f)==11;
+      bool sizeOk=(bytes&0x7f)==11;
+      bool valid=sizeOk;
       if(valid && !radio.burst(0x3f,data,11,true)) { fail(); return; }
       valid=valid && data[0]==8 && (data[10]&0x80) && wire::decode(data+1,frame,self);
       bool fresh=valid && self==2 && frame.type==wire::Ping;
@@ -115,7 +117,9 @@ void loop() {
         haveRx=true; lastRx=frame.seq; awaiting=false; schedule(frame);
       }
       int rssi=int(int8_t(data[9]))/2-74;
-      event(accepted?"rx":"reject",frame,(data[10]&0x80)?1:0,rssi,data[10]&127);
+      event(accepted?"rx":!sizeOk?"reject-size":data[0]!=8?"reject-length":
+        !(data[10]&0x80)?"reject-crc":"reject-protocol",frame,
+        sizeOk?((data[10]&0x80)?1:0):-1,rssi,data[10]&127,bytes&0x7f);
     } else if((marc&31)==1 && !(bytes&0x7f)) {
       if(!receiveMode()) { fail(); return; }
     }

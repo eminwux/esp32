@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
+#include "status.h"
 // CC1101 SWRS061I: config reads use 0x80; status reads MUST use 0xc0.
 class Radio {
   static constexpr int CS=5, SO=19;
@@ -27,7 +28,7 @@ public:
   }
   bool wait(uint8_t wanted) {
     uint32_t start=micros(); uint8_t s;
-    do { if(!status(0x35,s)) return false; if((s&31)==wanted) return true; }
+    do { if(!stableStatus(*this,0x35,s)) return false; if((s&31)==wanted) return true; }
     while(uint32_t(micros()-start)<5000);
     return false;
   }
