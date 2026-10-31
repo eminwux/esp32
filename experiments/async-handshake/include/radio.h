@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
+#include "logging.h"
 
 // CC1101 SWRS061I: sections 10, 12-14, 24-27 and register tables.
 // GDO0 is baseband data, never a software-generated RF carrier.
@@ -87,7 +88,7 @@ public:
         uint8_t part, version;
         if (!read(0x30, part, true) || !read(0x31, version, true) ||
             part != 0 || version == 0 || version == 0xff) return false;
-        Serial.printf("CC1101 part=%02x version=%02x\n", part, version);
+        logMessage("RADIO", "CC1101 detected (part=0x%02x, silicon version=0x%02x)", part, version);
         const uint8_t config[][2] = {
             {0x00, 0x2e}, {0x01, 0x2e}, {0x02, 0x2e}, // All GDOs initially high-Z.
             {0x04, 0x00}, {0x05, 0x00}, // Hardware sync unused.
@@ -110,8 +111,12 @@ public:
         uint8_t actual[8];
         if (!readBurst(0x3e, actual, sizeof(actual))) return false;
         for (unsigned i = 0; i < 8; ++i) if (actual[i] != pa[i]) return false;
-        for (const auto& pair : config) Serial.printf("reg[%02x]=%02x\n", pair[0], pair[1]);
-        Serial.println("PATABLE=00,12,00,00,00,00,00,00 (nominal -30 dBm at 433 MHz)");
+        if (LOG_REGISTERS) {
+            for (const auto& pair : config)
+                logMessage("REGISTER", "verified address=0x%02x value=0x%02x", pair[0], pair[1]);
+            logMessage("REGISTER", "PATABLE=00,12,00,00,00,00,00,00");
+        }
+        logMessage("RADIO", "Configuration verified: async serial OOK; software framing and CRC; nominal TX power -30 dBm");
         return true;
     }
     bool receive(uint32_t hz) {

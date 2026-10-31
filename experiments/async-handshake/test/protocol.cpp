@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "timing.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -147,7 +148,50 @@ static void sessions() {
     assert(!rebootA.receive(rebootB.next()));
     a.recover(456); assert(a.next().session != 456); // Avoid immediate epoch reuse.
 }
+static void timing() {
+    // The user's trace stops several seconds after A queues sequence 2.
+    // A ~340 ms TX costs 6460 ms of silence at 5%; that pause is intentional.
+    uint32_t silence = silenceMs(340, 50, 2000);
+    assert(silence == 6460);
+    const uint32_t end = 500, received = end + 488;
+    assert(sendWaitMs(remainingMs(received, received, 150),
+                      remainingMs(received, end, silence)) == 5972);
+    assert(remainingMs(end + 4000, end, silence) == 2460);
+    assert(remainingMs(end + silence - 1, end, silence) == 1);
+    assert(remainingMs(end + silence, end, silence) == 0);
+    assert(remainingMs(end + silence + 1, end, silence) == 0);
+    assert(silenceMs(10, 50, 2000) == 2000);
+    assert(sendWaitMs(150, 0) == 150);
+    assert(remainingMs(0x20, 0xfffffff0, 100) == 52);
+    assert(remainingMs(0x54, 0xfffffff0, 100) == 0);
+
+    // Drive production handshake + timer gates through a minute of logical
+    // time: the pending reply must eventually send, without bypassing silence.
+    Handshake nodes[] = {Handshake(1), Handshake(2)};
+    uint32_t ended[2] = {}, queued[2] = {}, sentAt[2] = {};
+    bool sent[2] = {};
+    unsigned exchanges = 0;
+    nodes[0].recover(123);
+    for (uint32_t now = 0; now < 60000; ++now) {
+        for (unsigned i = 0; i < 2; ++i) {
+            if (!nodes[i].pending()) continue;
+            if (sendWaitMs(remainingMs(now, queued[i], 150),
+                           sent[i] ? remainingMs(now, ended[i], silence) : 0)) continue;
+            if (sent[i]) assert(now - ended[i] >= silence);
+            Frame f = nodes[i].next(); nodes[i].sent();
+            sentAt[i] = now; ended[i] = now + 340; sent[i] = true;
+            // Advance past transmission; the peer can only queue after RX.
+            now += 340;
+            assert(nodes[1 - i].receive(f));
+            queued[1 - i] = now;
+            if (exchanges > 0) assert(now - ended[1 - i] < 10000);
+            ++exchanges;
+        }
+    }
+    assert(exchanges >= 10);
+    assert(sentAt[0] > 50000 && sentAt[1] > 50000);
+}
 int main() {
-    codec(); framing(); samples(); sessions();
-    puts("PASS: CRC/golden frame, invalid fields, bit/sample resync, jitter/drift, wrap and recovery");
+    codec(); framing(); samples(); sessions(); timing();
+    puts("PASS: protocol, sampled decoder, recovery, airtime countdown and scheduled exchange model");
 }

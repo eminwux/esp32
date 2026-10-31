@@ -7,8 +7,11 @@ controls **baseband data**, not a bit-banged 433 MHz carrier. No RF library,
 hardware packet FIFO, hardware sync recognition or hardware CRC is used.
 
 This is an educational bench implementation. Both role builds and host tests
-can run without a radio. **RF operation, jitter on real hardware, receiver tuning,
-and two-board recovery are unverified** until the procedure below is performed.
+can run without a radio. User-supplied traces from the initial firmware show
+A's PING(seq=0) reaching B and B's PONG_PING(seq=1, ack=0) reaching A in the
+same session. They stop during the next reply's airtime cooldown; they do not
+demonstrate a stalled exchange. **Sustained RF operation, waveform jitter,
+receiver tuning and two-board recovery still need bench verification.**
 The repository has no hardware CI harness. The initial receiver profile is a
 datasheet-derived starting point, not a measured optimum.
 
@@ -55,6 +58,7 @@ The common build flags in `platformio.ini` are inherited by both roles:
 | `DUTY_PERMILLE` | 50: at most 5% long-term radio TX-state occupancy per board |
 | `RF_SESSION_MS` | 60000 after boot; stop RF at expiry; 0 opts into indefinite operation with duty limits |
 | `RAW_OOK_TEST` | 0 handshake; 1 makes A send 64 alternating bits while B reports raw runs |
+| `LOG_REGISTERS` | 0 concise configuration summary; 1 also prints every verified register and the PA table |
 
 Role flags are mutually exclusive `NODE_ROLE_A` / `NODE_ROLE_B`. Both nodes must
 use the same framing/timing flags. Compile-time checks reject a reply window
@@ -90,8 +94,9 @@ is not assumed reliable. The selected GPIO period is 1664 us (600.96 bit/s).
 | `FREND0`, `PATABLE` | `0x11`, `[0x00,0x12,0,0,0,0,0,0]`: OFF for zero, nominal −30 dBm for one at 433 MHz |
 
 `radio.h` contains the complete profile. Configuration writes, synthesizer
-words and the PA table are read back; startup prints the verified register
-values, silicon ID and PA table. Status reads set READ|BURST even for one byte.
+words and the PA table are read back; startup prints a human-readable summary
+and silicon ID. Set `LOG_REGISTERS=1` for individual verified register values
+and the PA table. Status reads set READ|BURST even for one byte.
 `MARCSTATE` is read twice per poll; readiness/state waits have deadlines.
 There are no accesses to the FIFO address `0x3F`.
 
@@ -154,8 +159,9 @@ implement it in software on both sides, revise the symbol rate, framing, tests
 and airtime accounting; the CC1101's hardware Manchester facility is unavailable
 in async mode. It is not enabled here.
 
-`timer max_interval_us` reports the largest observed ISR interval each reporting
-period; it is not a measured GPIO or RF waveform. `overruns` counts ring losses.
+`TIMING: Longest sample interval` reports the largest observed ISR interval each
+reporting period; it is not a measured GPIO or RF waveform. `buffer overruns`
+counts ring losses.
 RSSI is deliberately not reported as packet RSSI: there is no hardware sync to
 latch it here, and reading it after a software-decoded frame could measure noise.
 
@@ -203,7 +209,7 @@ sessions in the applicable local allocation. Nominal PA settings and this
 budget do not certify regulatory compliance. Check the allowed frequency,
 power, duty window and test arrangement at the test location before upload.
 
-1. Boot B then A. Check the silicon ID and register dump, especially `08=30`,
+1. Enable `LOG_REGISTERS=1`, boot B then A. Check the silicon ID and register dump, especially `08=30`,
    `12=30`, `19=00`, and the PA table. A missing device must produce a bounded
    FAULT/reinitialization cycle, not hang.
 2. Set `RAW_OOK_TEST=1` on both nodes. A sends alternating bits; B prints raw
@@ -225,23 +231,50 @@ power, duty window and test arrangement at the test location before upload.
 6. Measure each board's TX occupancy and silence, including retries, against the
    configured budget. Confirm STOP at 60 seconds and no carrier afterward.
 
-Illustrative expected trace (not captured hardware evidence):
+## Reading the logs
+
+Every firmware line starts with `[A <milliseconds> ms]` or `[B <milliseconds> ms]`,
+followed by its category. Timestamps are local uptime; the boards' clocks are
+not synchronized. ESP32 ROM boot messages (before the firmware starts) retain
+their vendor format and cannot carry this application prefix.
+
+`SENT` and `RECEIVED` name the message, source/destination, sequence, ACK and
+session. `WAIT` explains whether a reply is queued, the radio is waiting for its
+peer, or recovery backoff is active. A queued-send countdown is the maximum of
+the remaining turnaround and airtime cooldown, using the same calculation that
+gates transmission. `HEALTH` reports cumulative accepted frames, CRC failures,
+rejections, decoder timeouts and reply timeouts. These status lines print once
+per second outside TX/ISR execution. Reception resumes before TX-completion logs.
+
+Why the initial trace appeared to stop: a roughly 340 ms TX at the default 5%
+budget requires `340 * 19 = 6460 ms` of silence. If B's valid reply arrives 488 ms
+after A finishes TX, A still waits about 5972 ms before sending sequence 2.
+The supplied logs cover only a few seconds of this wait, with no CRC errors,
+buffer overruns or reply timeouts. Keep both monitors open past that countdown;
+the following send, a timeout/fault, or the 60-second STOP will now be explicit.
+The exact cooldown depends on measured TX/setup/exit duration; the firmware
+prints its actual remaining wait rather than assuming these example numbers.
+
+Illustrative new log format (not captured hardware evidence):
 
 ```text
-A: TX type=1 seq=0 ack=65535 session=12345678
-B: RX seq=0 ack=65535 session=12345678 ...; reply queued
-B: TX type=2 seq=1 ack=0 session=12345678
-A: RX seq=1 ack=0 session=12345678 ...; reply queued
-A: TX type=2 seq=2 ack=1 session=12345678
+[A 530 ms] SENT: PING A -> B: sequence=0, acknowledgment=none, session=12345678
+[B 550 ms] RECEIVED: PING A -> B: sequence=0, acknowledgment=none, session=12345678
+[B 1040 ms] SENT: PONG_PING B -> A: sequence=1, acknowledges=0, session=12345678
+[A 988 ms] RECEIVED: PONG_PING B -> A: sequence=1, acknowledges=0, session=12345678
+[A 988 ms] REPLY: Accepted B's reply 488 ms after our TX completed
+[A 988 ms] WAIT: PONG_PING sequence=2 queued; send in 5972 ms (airtime cooldown=5972 ms, turnaround=150 ms); listening to B
+[A 1988 ms] WAIT: PONG_PING sequence=2 queued; send in 4972 ms (airtime cooldown=4972 ms, turnaround=0 ms); listening to B
 ...
-TIMEOUT: retire session; A will retry, B listens for a new PING
-STOP: RF session limit; reset boards to run again
+[A 7330 ms] SENT: PONG_PING A -> B: sequence=2, acknowledges=1, session=12345678
+...
+[A 60000 ms] STOP: RF run reached 60000 ms; requested radio IDLE. Reset both boards to run again
 ```
 
-RX `latency_ms` is elapsed time since the local TX completion; on B's first
-PING it is time since boot. It includes enforced peer silence, not just RF
-propagation. Counter/status output is outside the ISR and can be buffered by
-the host serial monitor.
+`REPLY` elapsed time is printed only for an accepted response to an outstanding
+TX. It includes peer silence and turnaround, not just RF propagation. B's first
+PING is logged as a new session, without presenting time since boot as latency.
+Host serial monitors can buffer output.
 
 ## Host verification and comparison
 
@@ -257,8 +290,11 @@ Tests cover the CRC vector and complete golden frame, all single-bit body/CRC
 corruptions, short frames, correct-CRC invalid fields, bad sync/length, a missing
 bit, noise, resynchronization, sampled waveforms with drift/jitter/glitches,
 search timeout, duplicates, wrong ACK/sequence/session, over 65536 exchanges,
-lost responses and peer reboot. They exercise the production codec/decoder and
-handshake; they do not emulate SPI, ESP32 interrupt scheduling, analog AGC or RF.
+lost responses and peer reboot. Timing tests cover the cooldown/countdown
+boundary, minimum silence, millisecond wrap, and a minute of modeled alternating
+handshake scheduling. They exercise the production codec/decoder, handshake
+and wait calculations; they do not emulate SPI, ESP32 interrupt scheduling,
+analog AGC or RF.
 
 In [issue #1](https://github.com/eminwux/esp32/issues/1), the CC1101 packet engine
 handles preamble, sync, CRC and FIFO bytes. Here all those responsibilities move

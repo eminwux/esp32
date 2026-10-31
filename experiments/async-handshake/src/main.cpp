@@ -3,6 +3,7 @@
 #include <soc/gpio_struct.h>
 #include "protocol.h"
 #include "radio.h"
+#include "timing.h"
 
 #if defined(NODE_ROLE_A) == defined(NODE_ROLE_B)
 #error Define exactly one node role
@@ -45,6 +46,29 @@ uint32_t replyStartMs = 0, queuedMs = 0, retryStartMs = 0, retryWaitMs = 0;
 uint32_t good = 0, crcErrors = 0, rejects = 0, decoderTimeouts = 0, losses = 0;
 uint32_t rawRuns = 0, rawRun = 0, rawMin = UINT32_MAX, rawMax = 0, lastStats = 0;
 bool rawPrevious = false, haveTx = false, healthy = false, stopped = false, recovering = true;
+
+const char* messageName(uint8_t type) { return type == ook::kPing ? "PING" : "PONG_PING"; }
+constexpr char kPeer = kLocal == 1 ? 'B' : 'A';
+uint32_t airtimeWait(uint32_t now) {
+    return haveTx ? ook::remainingMs(now, lastEndMs, offTimeMs) : 0;
+}
+uint32_t responseWait(uint32_t now) {
+    return ook::sendWaitMs(ook::remainingMs(now, queuedMs, TURNAROUND_DELAY_MS), airtimeWait(now));
+}
+void logFrame(const char* direction, const ook::Frame& f) {
+    if (f.type == ook::kPing)
+        logMessage(direction, "PING %c -> %c: sequence=%u, acknowledgment=none, session=%08lx",
+                   'A' + f.source - 1, 'A' + f.destination - 1, f.seq, (unsigned long)f.session);
+    else
+        logMessage(direction, "PONG_PING %c -> %c: sequence=%u, acknowledges=%u, session=%08lx",
+                   'A' + f.source - 1, 'A' + f.destination - 1, f.seq, f.ack, (unsigned long)f.session);
+}
+void logPending(uint32_t now) {
+    logMessage("WAIT", "%s sequence=%u queued; send in %lu ms (airtime cooldown=%lu ms, turnaround=%lu ms); listening to %c",
+               messageName(handshake.next().type), handshake.next().seq,
+               (unsigned long)responseWait(now), (unsigned long)airtimeWait(now),
+               (unsigned long)ook::remainingMs(now, queuedMs, TURNAROUND_DELAY_MS), kPeer);
+}
 
 void IRAM_ATTR tick() {
     portENTER_CRITICAL_ISR(&mux);
@@ -100,16 +124,15 @@ void accountTx() {
     // debt over errors/recovery so retries cannot bypass the duty budget.
     lastEndMs = millis(); haveTx = true;
     uint32_t duration = lastEndMs - txStartMs + 1;
-    offTimeMs = uint64_t(duration) * (1000 - DUTY_PERMILLE) / DUTY_PERMILLE;
-    if (offTimeMs < MIN_INTERFRAME_MS) offTimeMs = MIN_INTERFRAME_MS;
+    offTimeMs = ook::silenceMs(duration, DUTY_PERMILLE, MIN_INTERFRAME_MS);
 }
 void radioFault() {
     pauseSamples(); digitalWrite(Radio::kData, LOW);
     radio.idle(); pinMode(Radio::kData, INPUT);
     healthy = false; recovery();
-    Serial.println("FAULT: radio/timing; RX discarded, retrying initialization");
+    logMessage("FAULT", "Radio/timing failure; discarded RX data. Reinitializing after %lu ms backoff",
+               (unsigned long)retryWaitMs);
 }
-bool airtimeReady(uint32_t now) { return !haveTx || now - lastEndMs >= offTimeMs; }
 bool beginTx() {
     pauseSamples();
     if (RAW_OOK_TEST) for (auto& b : txWire) b = 0xaa;
@@ -125,18 +148,26 @@ bool beginTx() {
 void setup() {
     Serial.begin(115200);
     bootMs = millis();
-    Serial.printf("Async OOK node=%u TX=%lu RX=%lu offset=%d steps bit_us=%lu\n",
-                  kLocal, (unsigned long)kTxHz, (unsigned long)kRxHz, RF_FREQ_OFFSET,
-                  (unsigned long)kBitUs);
+    logMessage("START", "Node %c (%s), peer %c; TX=%lu Hz, RX=%lu Hz, frequency correction=%d steps",
+               kLogNode, kLocal == 1 ? "initiator" : "responder", kPeer,
+               (unsigned long)kTxHz, (unsigned long)kRxHz, RF_FREQ_OFFSET);
+    logMessage("TIMING", "Bit period=%lu us; turnaround=%u ms; reply timeout=%u ms; TX budget=%u.%u%%",
+               (unsigned long)kBitUs, unsigned(TURNAROUND_DELAY_MS), unsigned(REPLY_TIMEOUT_MS),
+               unsigned(DUTY_PERMILLE / 10), unsigned(DUTY_PERMILLE % 10));
+    if (RF_SESSION_MS) logMessage("LIMIT", "RF run ends %lu ms after boot; reset both boards for another run",
+                                 (unsigned long)RF_SESSION_MS);
+    else logMessage("LIMIT", "Indefinite RF run enabled; airtime cooldown remains enforced");
     timer = timerBegin(0, 80, true); // 80 MHz APB / 80 = 1 us.
-    if (!timer) { stopped = true; Serial.println("FAULT: timer allocation"); return; }
+    if (!timer) { stopped = true; logMessage("FAULT", "Could not allocate sampling timer; stopped"); return; }
     timerAttachInterrupt(timer, &tick, true);
     timerAlarmWrite(timer, SAMPLE_PERIOD_US, true);
     previousTick = micros(); timerAlarmEnable(timer);
     healthy = radio.begin() && enterRx();
     if (!healthy) radioFault();
-    retryStartMs = millis(); retryWaitMs = 0;
-    Serial.println("RX listening; timing and RF behavior require bench verification");
+    if (healthy) { retryStartMs = millis(); retryWaitMs = 0; }
+    if (healthy) logMessage("LISTEN", "Receiver settled on %lu Hz; %s", (unsigned long)kRxHz,
+                            RAW_OOK_TEST ? "raw OOK test mode" :
+                            kLocal == 1 ? "preparing initial PING" : "waiting for A's initial PING");
 }
 void loop() {
     if (stopped) { delay(10); return; }
@@ -144,7 +175,8 @@ void loop() {
     if (RF_SESSION_MS && now - bootMs >= RF_SESSION_MS) {
         pauseSamples(); digitalWrite(Radio::kData, LOW); radio.idle();
         pinMode(Radio::kData, INPUT); stopped = true;
-        Serial.println("STOP: RF session limit; reset boards to run again"); return;
+        logMessage("STOP", "RF run reached %lu ms; requested radio IDLE. Reset both boards to run again",
+                   (unsigned long)RF_SESSION_MS); return;
     }
     bool fault, done, sending;
     portENTER_CRITICAL(&mux);
@@ -161,6 +193,8 @@ void loop() {
         if (now - retryStartMs >= retryWaitMs) {
             healthy = radio.begin() && enterRx();
             recovery();
+            if (healthy) logMessage("LISTEN", "Radio recovered; receiver ready on %lu Hz", (unsigned long)kRxHz);
+            else logMessage("FAULT", "Radio initialization failed; retrying in %lu ms", (unsigned long)retryWaitMs);
         }
         delay(1); return;
     }
@@ -168,14 +202,20 @@ void loop() {
     if (done) {
         if (!radio.idle()) { accountTx(); txBits = 0; radioFault(); return; }
         accountTx(); txBits = 0;
+        // Resume RX before logging so serial output cannot delay peer reception.
+        if (!enterRx()) { radioFault(); return; }
         if (!RAW_OOK_TEST) {
             const auto f = handshake.next();
-            handshake.sent(); replyStartMs = millis();
-            Serial.printf("TX type=%u seq=%u ack=%u session=%08lx\n", f.type, f.seq, f.ack,
-                          (unsigned long)f.session);
+            handshake.sent(); replyStartMs = lastEndMs;
+            logFrame("SENT", f);
+            logMessage("LISTEN", "Waiting for %c's reply on %lu Hz (timeout in %lu ms); local TX cooldown=%lu ms",
+                       kPeer, (unsigned long)kRxHz,
+                       (unsigned long)ook::remainingMs(millis(), replyStartMs, REPLY_TIMEOUT_MS),
+                       (unsigned long)airtimeWait(millis()));
+        } else {
+            logMessage("SENT", "64 alternating raw OOK bits; next burst in %lu ms; receiver ready",
+                       (unsigned long)airtimeWait(millis()));
         }
-        if (!enterRx()) { radioFault(); return; }
-        Serial.println("RX settled");
     }
     // Drain captured samples outside the ISR, with a bounded loop. Serial and
     // SPI never run in the timer callback; an overrun invalidates the candidate.
@@ -197,11 +237,14 @@ void loop() {
         ook::Frame f;
         ook::Result result = decoder.sample(level, kLocal, f);
         if (result == ook::Result::Good) {
+            bool awaitedReply = handshake.waiting() && f.type == ook::kPongPing;
             if (handshake.receive(f)) {
                 ++good; queuedMs = millis(); recovering = false;
-                Serial.printf("RX seq=%u ack=%u session=%08lx latency_ms=%lu; reply queued\n",
-                              f.seq, f.ack, (unsigned long)f.session,
-                              (unsigned long)(millis() - replyStartMs));
+                logFrame("RECEIVED", f);
+                if (awaitedReply) logMessage("REPLY", "Accepted %c's reply %lu ms after our TX completed",
+                                             kPeer, (unsigned long)(queuedMs - replyStartMs));
+                else logMessage("SESSION", "Accepted A's new session; preparing first response");
+                logPending(millis());
             } else ++rejects;
         } else if (result == ook::Result::Crc) ++crcErrors;
         else if (result == ook::Result::Timeout) ++decoderTimeouts;
@@ -210,14 +253,20 @@ void loop() {
     now = millis();
     if (!RAW_OOK_TEST && handshake.waiting() && now - replyStartMs >= REPLY_TIMEOUT_MS) {
         ++losses; recovery(); decoder.reset();
-        Serial.println("TIMEOUT: retire session; A will retry, B listens for a new PING");
+        if (kLocal == 1)
+            logMessage("TIMEOUT", "No valid reply from B within %u ms; retired session. New PING after %lu ms backoff and airtime cooldown",
+                       unsigned(REPLY_TIMEOUT_MS), (unsigned long)retryWaitMs);
+        else logMessage("TIMEOUT", "No valid reply from A within %u ms; retired session. Listening for A's new PING",
+                        unsigned(REPLY_TIMEOUT_MS));
     }
     if (!RAW_OOK_TEST && kLocal == 1 && recovering && now - retryStartMs >= retryWaitMs) {
         handshake.recover(esp_random()); queuedMs = now; recovering = false;
+        logMessage("SESSION", "Starting exchange with B; new session=%08lx", (unsigned long)handshake.next().session);
+        logPending(millis());
     }
     bool wantTx = RAW_OOK_TEST ? kLocal == 1 :
-        handshake.pending() && now - queuedMs >= TURNAROUND_DELAY_MS;
-    if (wantTx && airtimeReady(now)) {
+        handshake.pending() && responseWait(now) == 0;
+    if (wantTx && airtimeWait(now) == 0) {
         if (!beginTx()) radioFault();
         return;
     }
@@ -228,15 +277,26 @@ void loop() {
         jitter = maxTickUs; maxTickUs = 0; overflow = overruns;
         portEXIT_CRITICAL(&mux);
         if (RAW_OOK_TEST) {
-            Serial.printf("raw runs=%lu min=%lu max=%lu samples (104us/sample)\n",
+            logMessage("RAW", "Observed %lu level runs; shortest=%lu, longest=%lu samples (104 us/sample)",
                           (unsigned long)rawRuns, (unsigned long)(rawRuns ? rawMin : 0),
                           (unsigned long)rawMax);
             rawRuns = rawMax = 0; rawMin = UINT32_MAX;
-        } else Serial.printf("stats good=%lu crc=%lu rejected=%lu decoder_timeout=%lu lost=%lu\n",
-                              (unsigned long)good, (unsigned long)crcErrors, (unsigned long)rejects,
-                              (unsigned long)decoderTimeouts, (unsigned long)losses);
-        Serial.printf("timer max_interval_us=%lu overruns=%lu\n", (unsigned long)jitter,
-                      (unsigned long)overflow);
+        } else {
+            if (handshake.pending()) logPending(now);
+            else if (handshake.waiting())
+                logMessage("WAIT", "Listening for %c's reply; timeout in %lu ms", kPeer,
+                           (unsigned long)ook::remainingMs(now, replyStartMs, REPLY_TIMEOUT_MS));
+            else if (kLocal == 1)
+                logMessage("WAIT", "Recovery backoff=%lu ms; airtime cooldown=%lu ms",
+                           (unsigned long)ook::remainingMs(now, retryStartMs, retryWaitMs),
+                           (unsigned long)airtimeWait(now));
+            else logMessage("WAIT", "Listening for A's initial PING");
+            logMessage("HEALTH", "Accepted=%lu, bad CRC=%lu, rejected=%lu, incomplete frames=%lu, reply timeouts=%lu",
+                       (unsigned long)good, (unsigned long)crcErrors, (unsigned long)rejects,
+                       (unsigned long)decoderTimeouts, (unsigned long)losses);
+        }
+        logMessage("TIMING", "Longest sample interval=%lu us (target 104 us); buffer overruns=%lu",
+                   (unsigned long)jitter, (unsigned long)overflow);
     }
     delay(1);
 }
