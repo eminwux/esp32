@@ -6,6 +6,11 @@ synthesizer, OOK modulation/demodulation, channel filter and amplifiers. GPIO26
 controls **baseband data**, not a bit-banged 433 MHz carrier. No RF library,
 hardware packet FIFO, hardware sync recognition or hardware CRC is used.
 
+Start with the [student guide](docs/student-guide.md) for a guided lab using
+predictions, measurements and the example logs. Use the
+[architecture reference](docs/architecture.md) to follow the code, state
+transitions, interrupt ownership and recovery paths.
+
 ## What this experiment demonstrates
 
 Two ESP32 boards take turns sending messages through their CC1101 radios. The
@@ -237,8 +242,8 @@ wake B, but without matching ACKs that session times out.
 Normal traffic alternates, including when both frequency flags are equal.
 Recovery can collide; only A reinitiates, with random backoff and a fresh epoch.
 Missed samples/bits, bad CRC and lost packets lead to frame rejection and/or
-bounded timeout, never indefinite waits. `lost` is the reply-timeout count,
-not a measurement of every physical RF loss.
+bounded timeout, never indefinite waits. `HEALTH: reply timeouts` counts expired reply windows,
+not every physical RF loss.
 
 ## Airtime and bench procedure
 
@@ -442,7 +447,12 @@ analog AGC or RF.
 
 In [issue #1](https://github.com/eminwux/esp32/issues/1), the CC1101 packet engine
 handles preamble, sync, CRC and FIFO bytes. Here all those responsibilities move
-to `protocol.h` and the ESP32 timer/ring in `main.cpp`, increasing timing,
+to `include/frame.h`, `include/decoder.h`, `include/handshake.h` and the ESP32
+timer/ring in `src/bit_io.cpp`, increasing timing,
 resynchronization and CPU complexity. Compare actual acceptance rate, GPIO/RF
 jitter, turnaround and loss recovery on the same bench; no superiority or
 hardware reliability claim follows from these host tests.
+
+The captured device logs predate the module refactor. Host tests and firmware
+builds validate the reorganized code within their scope; repeat the bench
+procedure on the refactored firmware to verify its on-device behavior.
