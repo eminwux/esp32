@@ -2,6 +2,7 @@
 #include "decoder.h"
 #include "handshake.h"
 #include "timing.h"
+#include "rx_observation.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -175,6 +176,43 @@ static void queuedIsNotSent() {
     assert(a.state() == Handshake::State::Listening);
     assert(!a.onFrameReceived(premature));
 }
+static void inputObservations() {
+    SampleDecoder decoder;
+    RxObservation observation;
+    Frame frame;
+    unsigned accepted = 0;
+    auto sample = [&](bool level) {
+        const auto before = decoder.stage();
+        const auto result = decoder.sample(level, 2, frame);
+        observation.observe(level, before, decoder.stage());
+        if (result == Result::Good) ++accepted;
+    };
+    for (unsigned i = 0; i < 1000; ++i) sample(false);
+    assert(observation.samples == 1000 && observation.high == 0 && observation.edges == 0);
+    assert(observation.preambles == 0 && observation.syncs == 0);
+    observation.clearWindow();
+    sample(true); // Edge across two reports is counted, not dropped.
+    assert(observation.samples == 1 && observation.high == 1 && observation.edges == 1);
+    observation.clearWindow();
+    observation.discontinuity();
+    sample(false); // No invented edge across a paused/discarded interval.
+    assert(observation.edges == 0);
+    for (unsigned i = 0; i < 32; ++i) sample(false);
+    observation.clearWindow();
+    auto bits = wireBits();
+    for (bool bit : bits)
+        for (unsigned tick = 0; tick < kSamplesPerBit; ++tick) sample(bit);
+    for (unsigned i = 0; i < 32; ++i) sample(false);
+    assert(accepted == 1 && observation.preambles == 1 && observation.syncs == 1);
+    assert(observation.samples == bits.size() * kSamplesPerBit + 32);
+    assert(observation.high > 0 && observation.high < observation.samples && observation.edges > 0);
+    observation.clearWindow();
+    // Alternating input can acquire phase without ever finding frame sync.
+    // Distinguish this from both a quiet input and a received CRC candidate.
+    decoder.reset();
+    for (unsigned i = 0; i < 64 * kSamplesPerBit; ++i) sample((i / kSamplesPerBit) % 2);
+    assert(observation.preambles == 1 && observation.syncs == 0 && accepted == 1);
+}
 static void timing() {
     // The user's trace stops several seconds after A queues sequence 2.
     // A ~340 ms TX costs 6460 ms of silence at 5%; that pause is intentional.
@@ -219,6 +257,6 @@ static void timing() {
     assert(sentAt[0] > 50000 && sentAt[1] > 50000);
 }
 int main() {
-    codec(); framing(); samples(); sessions(); queuedIsNotSent(); timing();
+    codec(); framing(); samples(); sessions(); queuedIsNotSent(); inputObservations(); timing();
     puts("PASS: protocol, sampled decoder, recovery, airtime countdown and scheduled exchange model");
 }

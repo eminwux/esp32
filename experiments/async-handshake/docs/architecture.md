@@ -14,11 +14,17 @@ with the [student guide](student-guide.md) for a guided lab, or the
 | [decoder.h](../include/decoder.h) | Samples → bits → candidate frame | Foreground / host tests |
 | [handshake.h](../include/handshake.h) | Which message is valid and which response to queue | Foreground / host tests |
 | [timing.h](../include/timing.h) | Wrap-safe countdown and TX silence calculations | Foreground / host tests |
+| [rx_observation.h](../include/rx_observation.h) | Input level/edge counts and decoder-stage observations | Foreground / host tests |
 | [bit_io.h](../include/bit_io.h), [bit_io.cpp](../src/bit_io.cpp) | Timer, GPIO, RX ring, TX buffer and event snapshots | ISR plus foreground API |
 | [radio.h](../include/radio.h) | `Cc1101Radio`: SPI, verified profile, retuning and direction changes | Foreground only |
 | [logging.h](../include/logging.h) | Bounded human-readable serial lines with node and uptime | Foreground only |
 | [main.cpp](../src/main.cpp) | `setup()` / `loop()`, deadlines, recovery, counters and orchestration | Foreground only |
 | [test/protocol.cpp](../test/protocol.cpp) | Codec, sampled decoder, protocol and scheduling checks | Host executable |
+
+[test/run-host.py](../test/run-host.py) also builds
+[test/transport.cpp](../test/transport.cpp) with the production `bit_io.cpp`
+and fake timer/GPIO primitives. It exercises the actual buffer and ISR code
+in a single-threaded simulation, without claiming hardware/concurrency coverage.
 
 Read the frame definition, handshake rules and `loop()` first. Then follow
 `processReceivedSamples()` and `beginTx()` into the lower layers. Pure protocol
@@ -141,6 +147,15 @@ allocation. A result of `Good` still needs `Handshake::onFrameReceived()` to
 validate the session/sequence/ACK relationship. Only acceptance increments the
 accepted counter and queues a response. Structural or protocol rejection
 produces no response.
+
+`SampleDecoder::stage()` exposes preamble search, sync search and body collection
+without changing their logic. `RxObservation` counts drained samples, high
+levels, edges and transitions into acquired timing/body collection. `INPUT`
+reports these per window; it makes activity before the frame/CRC boundary
+visible. Clear the last-level history when samples are discarded so a TX/RX
+pause cannot invent an input edge. Reporting resets counts but retains the last
+level to count transitions across status windows once. All this work remains
+in the foreground; no diagnostics were added to the ISR.
 
 The new frame's turnaround starts when foreground processing accepts it. Log
 latency therefore includes processing and peer waiting time. It is not a

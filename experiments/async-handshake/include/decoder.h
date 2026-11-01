@@ -11,6 +11,7 @@ class BitDecoder {
     unsigned collectedBits_ = 0;
     bool collecting_ = false;
 public:
+    bool collectingFrame() const { return collecting_; }
     void reset() {
         preambleAndSync_ = 0;
         collectedBits_ = 0;
@@ -51,6 +52,11 @@ class SampleDecoder {
     uint8_t recentSamples_ = 0, qualifyingEdges_ = 0;
     bool previousFilteredLevel_ = false, phaseAcquired_ = false;
 public:
+    enum class Stage { Preamble, Sync, Body };
+    Stage stage() const {
+        if (!phaseAcquired_) return Stage::Preamble;
+        return frameDecoder_.collectingFrame() ? Stage::Body : Stage::Sync;
+    }
     void reset() { *this = SampleDecoder(); }
     Result sample(bool level, uint8_t local, Frame& f) {
         ++sampleTick_;

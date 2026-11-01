@@ -425,9 +425,62 @@ The default 60000 ms run limit will intentionally stop further RF activity.
 The supplied excerpt ends around 24 seconds and does **not** include that STOP
 or a disconnect/reboot recovery test. Those remain separate bench checks.
 
+### When neither board receives a frame
+
+In a later user trace, A sent PING for session `a7c3df3d` at 588 ms, timed out
+at 10564 ms, and sent another PING for `9a47b0c7` at 12818 ms. B stayed waiting
+for its initial PING with every frame counter at zero. This is a failure to
+establish the exchange, unlike the successful trace's intentional cooldown.
+Neither trace reports an overrun or timing fault. The cause of this later
+failure has **not** been established, including whether it is a refactor
+regression or a bench/setup problem.
+
+Zero CRC errors cannot establish a healthy input: CRC is checked only after
+acquiring timing, finding sync and collecting the body. The diagnostic firmware
+prints `BUILD: async-ook rx-diag-1` and an `INPUT` line each status period, even
+in normal handshake mode:
+
+| Observation | What it establishes / next check |
+| --- | --- |
+| `samples=0` throughout a listening period | No samples were drained; inspect sampler enablement and foreground progress |
+| Samples increase, `high=0`, `edges=0` | Sampled input stayed low; inspect GDO0/GPIO26 signal and wiring |
+| Samples increase, `high=samples`, `edges=0` | Sampled input stayed high; inspect the input signal and wiring |
+| Edges increase, `preambles=0` | Input changes, but no qualifying preamble timing was acquired; inspect waveform, bit timing and RF setup |
+| Preambles increase, `syncs=0` | Timing was acquired but exact frame sync was not found; noise can also acquire phase |
+| Syncs increase, frames fail | A body candidate started; use CRC, incomplete-frame and rejection counters to locate the next boundary |
+
+`samples`, `high`, `edges`, `preambles` and `syncs` cover the interval since the
+previous report; `HEALTH` counters are cumulative. `seeking=preamble/sync/body`
+shows the decoder stage at report time. About 9615 samples per second is expected
+during continuous RX, with fewer during TX, retuning and settling. These are
+foreground observations of drained samples, not RSSI or proof of RF energy.
+
+To diagnose a failed run, build and upload both roles from this PR, open both
+monitors, reset B then A promptly, and capture both complete 60-second runs.
+Confirm the new BUILD marker on both. Compare B's INPUT activity around A's
+PING attempts, allowing for independent boot clocks. Keep power, frequency
+offsets, rate and duty settings unchanged for this trial. If the cause remains
+unclear, use the raw-mode/GPIO measurement procedure above and repeat with
+pre-refactor revision `c583449` on both boards using the same setup. A controlled
+old/new comparison can help distinguish a regression from a setup problem.
+
 ## Host verification and comparison
 
-No board or PlatformIO dependency is needed for the C++11 host test:
+Run all host tests with a C++11 compiler and Python 3:
+
+```sh
+python3 experiments/async-handshake/test/run-host.py
+```
+
+Set `CXX` to choose another compiler (including arguments). The runner uses the
+normal A/B flags from `platformio.ini` and builds the real `src/bit_io.cpp`
+against the minimal timer/GPIO fakes in `test/fakes/`. It checks the emitted
+200-bit waveform, copied TX buffer lifetime, sampled RX through the ring and
+decoder, ring wrap/overflow, raw-burst length and timing-fault/completion events.
+The fake boundary is single-threaded: this does not validate ESP32 interrupt
+latency, concurrent critical sections, physical pins, SPI or analog RF.
+
+The pure protocol suite can also run alone without Python or PlatformIO:
 
 ```sh
 c++ -std=c++11 -Wall -Wextra -Werror -I experiments/async-handshake/include \

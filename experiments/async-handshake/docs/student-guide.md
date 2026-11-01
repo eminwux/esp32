@@ -73,7 +73,8 @@ both a fresh run. Save both outputs through the `STOP` lines. Monitor opening
 can reset a board, so use its `START` line to identify the actual run. Do not
 combine records from separate resets as though they shared one clock.
 
-**Observe.** Find `START`, `RADIO`, `LISTEN`, `SESSION`, `SENT`, `RECEIVED`,
+**Observe.** Confirm `BUILD: async-ook rx-diag-1` on both boards so you know
+the diagnostic firmware was uploaded. Find `START`, `RADIO`, `LISTEN`, `SESSION`, `SENT`, `RECEIVED`,
 `HEALTH` and `STOP`. Record the session ID and every sequence/ACK pair. A starts
 with PING; B initially listens. The ROM boot banner is outside the application
 logger; application lines identify the board and milliseconds since its boot.
@@ -174,7 +175,8 @@ also contains the length byte and two CRC bytes. Integers are big-endian and
 bits are emitted most significant first. `ffff` means no ACK in the initial
 PING; it can also be a real wrapped ACK in a continuation.
 
-**Try.** Run the [host tests](../README.md#host-verification-and-comparison).
+**Try.** Run all host checks with `python3 experiments/async-handshake/test/run-host.py`.
+See the [host tests](../README.md#host-verification-and-comparison).
 Read `codec()` and `queuedIsNotSent()` in [test/protocol.cpp](../test/protocol.cpp).
 The tests flip each body/CRC bit and inject wrong fields, then check rejection.
 This is a controlled offline corruption experiment; it does not require
@@ -234,6 +236,7 @@ one endpoint per trial and record the time of the disturbance.
 | --- | --- |
 | No application `START` | Board power, flashed role and serial port |
 | `FAULT` during radio initialization | Wiring, power, SPI readiness and register readback |
+| Normal-mode `INPUT` shows no edges | Sample count and whether the GDO0 input is stuck high/low; see the [diagnostic table](../README.md#when-neither-board-receives-a-frame) |
 | Raw input changes but no accepted frames | Frequency/profile, bit timing, preamble/sync and decoder assumptions |
 | Bad CRC or incomplete frames rise | Sampled waveform and candidate framing; counters alone do not identify the RF cause |
 | Rejected frames rise | Fields, peer identity, session and sequence/ACK relationship |

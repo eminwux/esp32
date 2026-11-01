@@ -6,10 +6,12 @@
 #include "bit_io.h"
 #include "radio.h"
 #include "timing.h"
+#include "rx_observation.h"
 
 Cc1101Radio radio;
 ook::Handshake handshake(config::kLocal);
 ook::SampleDecoder decoder;
+ook::RxObservation rxObservation;
 // Foreground-owned state. Interrupt-owned data lives entirely in bit_io.cpp.
 enum class AppState { Initializing, Ready, Stopped };
 AppState appState = AppState::Initializing;
@@ -55,6 +57,7 @@ void logPending(uint32_t now) {
 void pauseSamples() {
     bit_io::pause();
     decoder.reset();
+    rxObservation.discontinuity();
 }
 bool enterRx() {
     pauseSamples();
@@ -149,7 +152,9 @@ void processReceivedSamples() {
             continue;
         }
         ook::Frame f;
+        const auto before = decoder.stage();
         ook::Result result = decoder.sample(level, config::kLocal, f);
+        rxObservation.observe(level, before, decoder.stage());
         if (result == ook::Result::Good) {
             bool awaitedReply = handshake.awaitingReply() && f.type == ook::kPongPing;
             if (handshake.onFrameReceived(f)) {
@@ -221,6 +226,14 @@ void reportStatusIfDue(uint32_t now) {
             logMessage("HEALTH", "Accepted=%lu, bad CRC=%lu, rejected=%lu, incomplete frames=%lu, reply timeouts=%lu",
                        (unsigned long)counters.accepted, (unsigned long)counters.badCrc, (unsigned long)counters.rejected,
                        (unsigned long)counters.decoderTimeouts, (unsigned long)counters.replyTimeouts);
+            const auto stage = decoder.stage();
+            logMessage("INPUT", "Since last report: samples=%lu, high=%lu, edges=%lu, preambles=%lu, syncs=%lu; seeking=%s",
+                       (unsigned long)rxObservation.samples, (unsigned long)rxObservation.high,
+                       (unsigned long)rxObservation.edges, (unsigned long)rxObservation.preambles,
+                       (unsigned long)rxObservation.syncs,
+                       stage == ook::SampleDecoder::Stage::Preamble ? "preamble" :
+                       stage == ook::SampleDecoder::Stage::Sync ? "sync" : "body");
+            rxObservation.clearWindow();
         }
         logMessage("TIMING", "Longest sample interval=%lu us (target 104 us); buffer overruns=%lu",
                    (unsigned long)timing.maxIntervalUs, (unsigned long)timing.overruns);
@@ -230,6 +243,7 @@ void reportStatusIfDue(uint32_t now) {
 void setup() {
     Serial.begin(115200);
     bootMs = millis();
+    logMessage("BUILD", "async-ook rx-diag-1; compiled %s %s", __DATE__, __TIME__);
     logMessage("START", "Node %c (%s), peer %c; TX=%lu Hz, RX=%lu Hz, frequency correction=%d steps",
                kLogNode, config::kLocal == 1 ? "initiator" : "responder", config::kPeerLabel,
                (unsigned long)config::kTxHz, (unsigned long)config::kRxHz, RF_FREQ_OFFSET);
