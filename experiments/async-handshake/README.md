@@ -140,7 +140,7 @@ is not assumed reliable. The selected GPIO period is 1664 us (600.96 bit/s).
 | `MDMCFG4/3` | `0xC4/0x84`: 601.29 baud at 26 MHz; 101.56 kHz channel bandwidth |
 | `FSCTRL1/0` | `0x06/0x00`: 152.34 kHz IF, no separate IF correction |
 | `FOCCFG` | `0x00`: frequency compensation disabled, as required for OOK |
-| `AGCCTRL2/1/0` | `0x03/0x40/0x91`: full gain range, 33 dB magnitude target, normal AGC, 8 dB slicer threshold |
+| `AGCCTRL2/1/0` | `0x03/0x00/0x91`: full gain range, 33 dB magnitude target, normal AGC, LNA2 reduced before LNA, 8 dB slicer threshold |
 | `MCSM2/1/0` | `0x07/0x00/0x08`: no RX search timeout, no automatic packet turnaround/CCA, manual calibration |
 | `IOCFG0` RX | `0x0D`: non-inverted async demodulated data; ESP32 pin is input |
 | `IOCFG0` TX/idle setup | `0x2E`: high impedance; async TX uses GDO0 as data input; ESP32 drives only after this setting |
@@ -436,8 +436,8 @@ failure has **not** been established, including whether it is a refactor
 regression or a bench/setup problem.
 
 Zero CRC errors cannot establish a healthy input: CRC is checked only after
-acquiring timing, finding sync and collecting the body. The diagnostic firmware
-prints `BUILD: async-ook rx-diag-1` and an `INPUT` line each status period, even
+acquiring timing, finding sync and collecting the body. The current trial firmware
+prints `BUILD: async-ook rx-agc-2` and an `INPUT` line each status period, even
 in normal handshake mode:
 
 | Observation | What it establishes / next check |
@@ -463,6 +463,43 @@ offsets, rate and duty settings unchanged for this trial. If the cause remains
 unclear, use the raw-mode/GPIO measurement procedure above and repeat with
 pre-refactor revision `c583449` on both boards using the same setup. A controlled
 old/new comparison can help distinguish a regression from a setup problem.
+
+### Initial exchange works, then preamble acquisition fails
+
+The next supplied `rx-diag-1` run, session `4c9070cb`, narrows the failure:
+
+| Event | Evidence |
+| --- | --- |
+| Initial A → B succeeds | B accepts PING 0 at 527 ms, with one acquired preamble and sync |
+| Initial B → A succeeds | A accepts sequence 1 / ACK 0 at 1051 ms |
+| A transmits continuation | A logs SENT sequence 2 / ACK 1 at 7394 ms |
+| B sees activity but acquires no preamble | B reports 1, 34 and 57 input edges in successive windows near this attempt; preamble/sync counts remain zero |
+| B's reply window expires | B times out at 11015 ms, with accepted=1 and no CRC, rejection or incomplete-frame errors |
+
+B's sampling continues at approximately 9615 samples/second without overruns
+or a timing fault. This locates the observed loss before software framing;
+it does not prove which RF source produced those edges or why the expected
+preamble was absent/distorted. A's high, edge-free input while B sends nothing
+is not by itself a stuck receiver. The first round trip also demonstrates
+post-refactor transmission, reception and protocol acceptance on these boards.
+
+The `rx-agc-2` trial changes only one radio profile value: **AGCCTRL1 at address
+0x1C, from 0x40 to 0x00**. This follows the OOK starting-point recommendation in
+[TI DN022, section 3.1](https://e2e.ti.com/cfs-file/__key/telligent-evolution-components-attachments/00-667-01-00-00-78-16-61/DN022_5F00_CC110x_5F00_CC111x_5F00_OOK_5F00_ASK_5F00_Register_5F00_Settings.pdf).
+It changes gain-reduction priority; the target magnitude and OOK decision
+boundary stay unchanged. Startup reports the verified `03/00/91` AGC profile.
+TI requires measured optimization across input levels; this is a controlled
+candidate adjustment, **not a verified fix for the supplied failure**.
+
+Upload both roles, confirm `rx-agc-2` and the new AGC profile on both boards,
+reset B then A promptly, and record a complete 60-second run. Keep the same
+antennas, separation, offsets, power and timing. The key result is whether B
+now acquires preamble/sync and accepts sequence 2, followed by continued exchange.
+The comparison firmware is `582059e` (`rx-diag-1`, `03/40/91`). If it still fails,
+measure A's transmitted GPIO26 and B's received GDO0 waveform around the
+preamble; aggregate edge counts cannot distinguish missing pulses, asymmetric
+pulse widths, interference or another radio/profile problem. No decoder
+threshold relaxation or periodic radio reset is applied without that evidence.
 
 ## Host verification and comparison
 

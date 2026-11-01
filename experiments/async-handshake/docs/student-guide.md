@@ -73,8 +73,9 @@ both a fresh run. Save both outputs through the `STOP` lines. Monitor opening
 can reset a board, so use its `START` line to identify the actual run. Do not
 combine records from separate resets as though they shared one clock.
 
-**Observe.** Confirm `BUILD: async-ook rx-diag-1` on both boards so you know
-the diagnostic firmware was uploaded. Find `START`, `RADIO`, `LISTEN`, `SESSION`, `SENT`, `RECEIVED`,
+**Observe.** Confirm `BUILD: async-ook rx-agc-2` on both boards so you know
+the current receiver-profile trial firmware was uploaded. Its AGC adjustment
+still needs bench validation; see the [latest failure analysis](../README.md#initial-exchange-works-then-preamble-acquisition-fails). Find `START`, `RADIO`, `LISTEN`, `SESSION`, `SENT`, `RECEIVED`,
 `HEALTH` and `STOP`. Record the session ID and every sequence/ACK pair. A starts
 with PING; B initially listens. The ROM boot banner is outside the application
 logger; application lines identify the board and milliseconds since its boot.

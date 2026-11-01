@@ -161,7 +161,10 @@ public:
             {cc1101::DEVIATN, 0x00}, {cc1101::MCSM2, 0x07}, // Deviation irrelevant; RX stays on.
             {cc1101::MCSM1, 0x00}, {cc1101::MCSM0, 0x08}, // No CCA/automatic transition or calibration.
             {cc1101::FOCCFG, 0x00}, {cc1101::BSCFG, 0x00}, // FOC_LIMIT=0 is required for OOK.
-            {cc1101::AGCCTRL2, 0x03}, {cc1101::AGCCTRL1, 0x40}, {cc1101::AGCCTRL0, 0x91}, // AGC; 8 dB OOK threshold.
+            // TI DN022 section 3.1 recommends AGCCTRL1=0 for OOK: reduce LNA2
+            // gain before LNA gain. Keep magnitude target and slicer unchanged
+            // for a controlled comparison with rx-diag-1's 03/40/91 profile.
+            {cc1101::AGCCTRL2, 0x03}, {cc1101::AGCCTRL1, 0x00}, {cc1101::AGCCTRL0, 0x91},
             {cc1101::FREND1, 0x56}, {cc1101::FREND0, 0x11}, // RX frontend; PA index 1.
             {cc1101::FSCAL3, 0xe9}, {cc1101::FSCAL2, 0x2a}, {cc1101::FSCAL1, 0x00}, {cc1101::FSCAL0, 0x1f},
             {cc1101::TEST2, 0x81}, {cc1101::TEST1, 0x35}, {cc1101::TEST0, 0x09}
@@ -179,6 +182,7 @@ public:
             logMessage("REGISTER", "PATABLE=00,12,00,00,00,00,00,00");
         }
         logMessage("RADIO", "Configuration verified: async serial OOK; software framing and CRC; nominal TX power -30 dBm");
+        logMessage("RADIO", "RX gain profile verified: AGCCTRL2/1/0=03/00/91 (rx-agc-2 trial)");
         return true;
     }
     // GPIO direction order is electrical safety: release the ESP32 output

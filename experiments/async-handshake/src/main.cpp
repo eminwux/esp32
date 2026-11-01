@@ -243,7 +243,7 @@ void reportStatusIfDue(uint32_t now) {
 void setup() {
     Serial.begin(115200);
     bootMs = millis();
-    logMessage("BUILD", "async-ook rx-diag-1; compiled %s %s", __DATE__, __TIME__);
+    logMessage("BUILD", "async-ook rx-agc-2; compiled %s %s", __DATE__, __TIME__);
     logMessage("START", "Node %c (%s), peer %c; TX=%lu Hz, RX=%lu Hz, frequency correction=%d steps",
                kLogNode, config::kLocal == 1 ? "initiator" : "responder", config::kPeerLabel,
                (unsigned long)config::kTxHz, (unsigned long)config::kRxHz, RF_FREQ_OFFSET);
