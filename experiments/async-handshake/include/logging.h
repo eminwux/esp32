@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "config.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,11 +8,7 @@
 #ifndef LOG_REGISTERS
 #define LOG_REGISTERS 0
 #endif
-#ifdef NODE_ROLE_A
-constexpr char kLogNode = 'A';
-#else
-constexpr char kLogNode = 'B';
-#endif
+constexpr char kLogNode = config::kNodeLabel;
 
 // Foreground only: call with TX stopped, never from the sampling ISR.
 // One bounded buffer/write keeps the identity attached to every firmware line.

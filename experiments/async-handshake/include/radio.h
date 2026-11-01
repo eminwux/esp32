@@ -2,11 +2,12 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include "logging.h"
+#include "config.h"
 
 // CC1101 SWRS061I: sections 10, 12-14, 24-27 and register tables.
 // GDO0 is baseband data, never a software-generated RF carrier.
 class Radio {
-    static constexpr int kCs = 5, kMiso = 19;
+    static constexpr int kCs = config::kCsPin, kMiso = config::kMisoPin;
     SPISettings settings_{1000000, MSBFIRST, SPI_MODE0};
     bool ready() {
         uint32_t start = micros();
@@ -59,7 +60,7 @@ class Radio {
         return state(1);
     }
 public:
-    static constexpr int kData = 26;
+    static constexpr int kData = config::kDataPin;
     bool readBurst(uint8_t address, uint8_t* values, size_t n) {
         if (!select()) return false;
         SPI.transfer(address | 0xc0);
@@ -80,7 +81,7 @@ public:
     bool idle() { return strobe(0x36) && state(1); }
     bool begin() {
         pinMode(kData, INPUT); pinMode(kCs, OUTPUT); digitalWrite(kCs, HIGH);
-        SPI.begin(18, kMiso, 23, kCs);
+        SPI.begin(config::kClockPin, kMiso, config::kMosiPin, kCs);
         // Manual reset sequence, before any pin is driven against reset GDO0.
         digitalWrite(kCs, LOW); delayMicroseconds(10);
         digitalWrite(kCs, HIGH); delayMicroseconds(50);

@@ -1,4 +1,6 @@
-#include "protocol.h"
+#include "frame.h"
+#include "decoder.h"
+#include "handshake.h"
 #include "timing.h"
 #include <assert.h>
 #include <stdio.h>
