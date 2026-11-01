@@ -11,6 +11,7 @@ experiment IDs; `base` identifies the formerly unsuffixed example.
 | [4](experiments/4/) | CC1101 SPI VERSION register check | `esp32dev` | Arduino SPI |
 | [5](experiments/5/) | CC1101 OOK pulse generator with calibration | `esp32_a`, `esp32_b` | Arduino SPI |
 | [pong](experiments/pong/) | Two-node CC1101 ping/pong | `esp32_a`, `esp32_b` | RadioLib |
+| [async-handshake](experiments/async-handshake/) | Software-framed async OOK PING / PONG-PING | `esp32_a`, `esp32_b` | Arduino SPI/GPIO/timer |
 
 ## Build, upload, and monitor
 
