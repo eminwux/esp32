@@ -122,33 +122,58 @@ static void samples() {
 }
 static void sessions() {
     Handshake a(1), b(2);
-    b.recover(55); assert(!b.pending()); // B never initiates.
-    a.recover(0x12345678); Frame first = a.next(); a.sent();
-    assert(b.receive(first)); assert(!b.receive(first));
+    b.startSession(55); assert(!b.hasQueuedReply()); // B never initiates.
+    a.startSession(0x12345678); Frame first = a.queuedFrame(); a.onTransmitComplete();
+    assert(b.onFrameReceived(first)); assert(!b.onFrameReceived(first));
     for (unsigned i = 0; i < 70000; ++i) {
         Handshake& sender = i % 2 == 0 ? b : a;
         Handshake& receiver = i % 2 == 0 ? a : b;
-        assert(sender.pending()); Frame f = sender.next(); sender.sent();
-        Frame stale = f; --stale.ack; assert(!receiver.receive(stale));
-        stale = f; stale.session ^= 1; assert(!receiver.receive(stale));
-        stale = f; ++stale.seq; assert(!receiver.receive(stale));
-        assert(receiver.receive(f));
-        assert(!receiver.receive(f)); // Duplicate before sending.
+        assert(sender.hasQueuedReply()); Frame f = sender.queuedFrame(); sender.onTransmitComplete();
+        Frame stale = f; --stale.ack; assert(!receiver.onFrameReceived(stale));
+        stale = f; stale.session ^= 1; assert(!receiver.onFrameReceived(stale));
+        stale = f; ++stale.seq; assert(!receiver.onFrameReceived(stale));
+        assert(receiver.onFrameReceived(f));
+        assert(!receiver.onFrameReceived(f)); // Duplicate before sending.
     }
     // Lost response: A retires its epoch; old reply cannot restart it.
-    Frame old = a.next(); a.timeout(); assert(!a.receive(old));
-    a.recover(123); first = a.next(); a.sent();
-    assert(b.receive(first)); // New PING can replace a waiting old B session.
-    Frame reply = b.next(); b.sent(); assert(a.receive(reply));
-    a.sent(); assert(!a.receive(reply)); // Duplicate after sending.
-    b.timeout(); assert(!b.receive(first)); assert(!b.pending());
+    Frame old = a.queuedFrame(); a.retireSession(); assert(!a.onFrameReceived(old));
+    a.startSession(123); first = a.queuedFrame(); a.onTransmitComplete();
+    assert(b.onFrameReceived(first)); // New PING can replace a waiting old B session.
+    Frame reply = b.queuedFrame(); b.onTransmitComplete(); assert(a.onFrameReceived(reply));
+    a.onTransmitComplete(); assert(!a.onFrameReceived(reply)); // Duplicate after sending.
+    b.retireSession(); assert(!b.onFrameReceived(first)); assert(!b.hasQueuedReply());
     // B reboot: a continuation is rejected until A times out and sends PING.
-    Handshake rebootB(2); assert(!rebootB.receive(a.next()));
-    a.recover(456); first = a.next(); a.sent(); assert(rebootB.receive(first));
+    Handshake rebootB(2); assert(!rebootB.onFrameReceived(a.queuedFrame()));
+    a.startSession(456); first = a.queuedFrame(); a.onTransmitComplete(); assert(rebootB.onFrameReceived(first));
     // A reboot gets a distinct random epoch; stale PONG_PING is rejected.
-    Handshake rebootA(1); rebootA.recover(789); rebootA.sent();
-    assert(!rebootA.receive(rebootB.next()));
-    a.recover(456); assert(a.next().session != 456); // Avoid immediate epoch reuse.
+    Handshake rebootA(1); rebootA.startSession(789); rebootA.onTransmitComplete();
+    assert(!rebootA.onFrameReceived(rebootB.queuedFrame()));
+    a.startSession(456); assert(a.queuedFrame().session != 456); // Avoid immediate epoch reuse.
+}
+static void queuedIsNotSent() {
+    Handshake a(1), b(2);
+    assert(a.state() == Handshake::State::Listening);
+    a.startSession(123);
+    assert(a.state() == Handshake::State::ReplyQueued);
+    // A plausible ACK arriving during the cooldown cannot acknowledge a frame
+    // that has only been queued. This applies to the initial PING and replies.
+    Frame premature = {kPongPing, 2, 1, 1, 0, 123};
+    assert(!a.onFrameReceived(premature));
+    a.onTransmitComplete();
+    assert(a.state() == Handshake::State::AwaitingReply);
+    assert(b.onFrameReceived(a.queuedFrame()));
+    b.onTransmitComplete();
+    assert(a.onFrameReceived(b.queuedFrame()));
+    assert(a.queuedFrame().seq == 2);
+    premature.seq = 3;
+    premature.ack = 2;
+    assert(!a.onFrameReceived(premature));
+    assert(a.queuedFrame().seq == 2);
+    a.onTransmitComplete();
+    assert(a.onFrameReceived(premature));
+    a.retireSession();
+    assert(a.state() == Handshake::State::Listening);
+    assert(!a.onFrameReceived(premature));
 }
 static void timing() {
     // The user's trace stops several seconds after A queues sequence 2.
@@ -173,18 +198,18 @@ static void timing() {
     uint32_t ended[2] = {}, queued[2] = {}, sentAt[2] = {};
     bool sent[2] = {};
     unsigned exchanges = 0;
-    nodes[0].recover(123);
+    nodes[0].startSession(123);
     for (uint32_t now = 0; now < 60000; ++now) {
         for (unsigned i = 0; i < 2; ++i) {
-            if (!nodes[i].pending()) continue;
+            if (!nodes[i].hasQueuedReply()) continue;
             if (sendWaitMs(remainingMs(now, queued[i], 150),
                            sent[i] ? remainingMs(now, ended[i], silence) : 0)) continue;
             if (sent[i]) assert(now - ended[i] >= silence);
-            Frame f = nodes[i].next(); nodes[i].sent();
+            Frame f = nodes[i].queuedFrame(); nodes[i].onTransmitComplete();
             sentAt[i] = now; ended[i] = now + 340; sent[i] = true;
             // Advance past transmission; the peer can only queue after RX.
             now += 340;
-            assert(nodes[1 - i].receive(f));
+            assert(nodes[1 - i].onFrameReceived(f));
             queued[1 - i] = now;
             if (exchanges > 0) assert(now - ended[1 - i] < 10000);
             ++exchanges;
@@ -194,6 +219,6 @@ static void timing() {
     assert(sentAt[0] > 50000 && sentAt[1] > 50000);
 }
 int main() {
-    codec(); framing(); samples(); sessions(); timing();
+    codec(); framing(); samples(); sessions(); queuedIsNotSent(); timing();
     puts("PASS: protocol, sampled decoder, recovery, airtime countdown and scheduled exchange model");
 }

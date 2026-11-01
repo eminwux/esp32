@@ -2,43 +2,69 @@
 #include "frame.h"
 
 namespace ook {
-// Stop-and-wait semantics shared with the host tests. A queued response is
-// not an outstanding packet until sent(); duplicates cannot queue more RF.
+// Pure protocol state: no clocks, GPIO or radio calls. The application decides
+// WHEN to send a queued frame; this class decides WHICH frame is allowed next.
 class Handshake {
-    uint8_t local_;
-    bool active_ = false, waiting_ = false, queued_ = false;
-    uint32_t session_ = 0, retired_ = 0;
-    uint16_t last_ = 0;
-    Frame next_ = {};
 public:
-    explicit Handshake(uint8_t local) : local_(local) {}
-    bool pending() const { return queued_; }
-    bool waiting() const { return waiting_; }
-    const Frame& next() const { return next_; }
-    void recover(uint32_t session) {
-        timeout();
-        if (local_ != 1) return;
-        session_ = session ? session : 1;
-        if (session_ == retired_) { ++session_; if (!session_) session_ = 1; }
-        active_ = queued_ = true;
-        next_ = {kPing, 1, 2, 0, 0xffff, session_};
+    enum class State { Listening, ReplyQueued, AwaitingReply };
+private:
+    uint8_t localNode_;
+    State state_ = State::Listening;
+    uint32_t sessionId_ = 0, retiredSessionId_ = 0;
+    uint16_t lastSentSequence_ = 0;
+    Frame queuedFrame_ = {};
+
+    bool sessionActive() const { return state_ != State::Listening; }
+public:
+    explicit Handshake(uint8_t localNode) : localNode_(localNode) {}
+    State state() const { return state_; }
+    bool hasQueuedReply() const { return state_ == State::ReplyQueued; }
+    bool awaitingReply() const { return state_ == State::AwaitingReply; }
+    const Frame& queuedFrame() const { return queuedFrame_; }
+
+    // A alone initiates. A fresh nonzero epoch prevents old ACKs from being
+    // mistaken for responses to sequence zero after timeout or reboot.
+    void startSession(uint32_t newSessionId) {
+        retireSession();
+        if (localNode_ != 1) return;
+        sessionId_ = newSessionId ? newSessionId : 1;
+        if (sessionId_ == retiredSessionId_) {
+            ++sessionId_;
+            if (!sessionId_) sessionId_ = 1;
+        }
+        state_ = State::ReplyQueued;
+        queuedFrame_ = {kPing, 1, 2, 0, 0xffff, sessionId_};
     }
-    void timeout() {
-        if (active_) retired_ = session_;
-        active_ = waiting_ = queued_ = false;
+    void retireSession() {
+        if (sessionActive()) retiredSessionId_ = sessionId_;
+        state_ = State::Listening;
     }
-    void sent() { last_ = next_.seq; queued_ = false; waiting_ = true; }
-    bool receive(const Frame& f) {
-        if (f.source != 3 - local_ || f.destination != local_ || !f.session) return false;
-        if (local_ == 2 && f.type == kPing && f.seq == 0 && f.ack == 0xffff) {
-            if (f.session == retired_ || (active_ && f.session == session_)) return false;
-            if (active_) retired_ = session_;
-            session_ = f.session; active_ = true;
-        } else if (!active_ || !waiting_ || f.type != kPongPing ||
-                   f.session != session_ || f.ack != last_ ||
-                   f.seq != uint16_t(last_ + 1)) return false;
-        next_ = {kPongPing, local_, uint8_t(3 - local_), uint16_t(f.seq + 1), f.seq, session_};
-        queued_ = true; waiting_ = false;
+    // Call only after successful TX completion. Merely queueing a frame must
+    // not make its ACK eligible, since it may wait several seconds for airtime.
+    void onTransmitComplete() {
+        lastSentSequence_ = queuedFrame_.seq;
+        state_ = State::AwaitingReply;
+    }
+    // Input has already passed frame/CRC checks. Session/sequence validation is
+    // a separate boundary: a structurally valid packet can still be stale.
+    bool onFrameReceived(const Frame& frame) {
+        if (frame.source != 3 - localNode_ || frame.destination != localNode_ || !frame.session)
+            return false;
+        if (localNode_ == 2 && frame.type == kPing && frame.seq == 0 && frame.ack == 0xffff) {
+            if (frame.session == retiredSessionId_ || (sessionActive() && frame.session == sessionId_))
+                return false;
+            // A new PING may supersede B's old exchange after A reboots.
+            if (sessionActive()) retiredSessionId_ = sessionId_;
+            sessionId_ = frame.session;
+        } else if (!awaitingReply() || frame.type != kPongPing ||
+                   frame.session != sessionId_ || frame.ack != lastSentSequence_ ||
+                   frame.seq != uint16_t(lastSentSequence_ + 1)) {
+            return false;
+        }
+        // uint16_t conversion intentionally wraps sequence 65535 to zero.
+        queuedFrame_ = {kPongPing, localNode_, uint8_t(3 - localNode_),
+                        uint16_t(frame.seq + 1), frame.seq, sessionId_};
+        state_ = State::ReplyQueued;
         return true;
     }
 };

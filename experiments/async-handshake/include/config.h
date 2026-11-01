@@ -13,7 +13,7 @@ constexpr uint32_t kTxHz = RF_FREQ_A_HZ, kRxHz = RF_FREQ_B_HZ;
 constexpr uint8_t kLocal = 2;
 constexpr uint32_t kTxHz = RF_FREQ_B_HZ, kRxHz = RF_FREQ_A_HZ;
 #endif
-constexpr unsigned kSamplesPerBit = 16;
+constexpr unsigned kSamplesPerBit = ook::kSamplesPerBit;
 constexpr uint32_t kBitUs = SAMPLE_PERIOD_US * kSamplesPerBit;
 constexpr uint32_t kFrameMs = (ook::kWireSize * 8 * kBitUs + 999) / 1000;
 static_assert(SAMPLE_PERIOD_US == 104, "This RF profile and decoder are validated only for 104 us sampling");
