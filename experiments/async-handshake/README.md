@@ -6,14 +6,63 @@ synthesizer, OOK modulation/demodulation, channel filter and amplifiers. GPIO26
 controls **baseband data**, not a bit-banged 433 MHz carrier. No RF library,
 hardware packet FIFO, hardware sync recognition or hardware CRC is used.
 
-This is an educational bench implementation. Both role builds and host tests
-can run without a radio. User-supplied traces from the initial firmware show
-A's PING(seq=0) reaching B and B's PONG_PING(seq=1, ack=0) reaching A in the
-same session. They stop during the next reply's airtime cooldown; they do not
-demonstrate a stalled exchange. **Sustained RF operation, waveform jitter,
-receiver tuning and two-board recovery still need bench verification.**
-The repository has no hardware CI harness. The initial receiver profile is a
-datasheet-derived starting point, not a measured optimum.
+## What this experiment demonstrates
+
+Two ESP32 boards take turns sending messages through their CC1101 radios. The
+experiment builds a small radio link from the baseband bits upward: software
+creates an OOK waveform, finds the received preamble and sync word, checks the
+frame and CRC, then decides whether the peer's acknowledgment is valid.
+
+A is the initiator and B is the responder. A sends on 433.920 MHz and listens on
+433.500 MHz; B uses the opposite pairing. Each radio can either transmit or
+receive at a given moment. After sending, the board retunes and listens for its
+peer. The same protocol can also be configured to use one shared frequency.
+
+The aim is to observe how bit timing, framing, acknowledgments and recovery
+work together. Each accepted response both acknowledges the previous message
+and asks for another response, so the exchange continues without an external
+trigger. The default bench run lasts 60 seconds and enforces a 5% per-board TX
+budget. Quiet intervals between messages are part of that budget.
+
+The [captured example below](#a-captured-exchange-step-by-step) shows repeated
+exchange through sequence 7 in session `fdd0e3f7`, with four accepted frames on
+each board and no reported errors over the roughly 24-second excerpt. These
+are user-supplied device logs, not simulated output. They demonstrate this run;
+longer-run reliability, waveform jitter, same-frequency operation and recovery
+from disconnects/reboots still need the bench checks below. The repository has
+no hardware CI harness, and the receiver profile is a datasheet-derived
+starting point rather than a measured optimum.
+
+## The handshake in one picture
+
+`PING` starts a session. `PONG_PING` has two jobs: its acknowledgment says
+“I received your previous message,” and its new sequence number requests the
+next reply. `sequence` identifies the current message; `acknowledges` identifies
+the preceding peer message. The session ID keeps replies associated with the
+current exchange when A restarts it.
+
+```mermaid
+sequenceDiagram
+    participant A as Node A (initiator)
+    participant B as Node B (responder)
+    Note over B: Boot into receive, wait for A
+    A->>B: PING sequence=0, acknowledgment=none
+    Note over A: Return to RX on B's frequency
+    Note over B: Validate frame, wait for turnaround
+    B->>A: PONG_PING sequence=1, acknowledges=0
+    Note over B: Return to RX on A's frequency
+    Note over A: Validate reply, wait for TX cooldown
+    A->>B: PONG_PING sequence=2, acknowledges=1
+    B->>A: PONG_PING sequence=3, acknowledges=2
+    Note over A,B: Repeat with increasing sequence and matching ACK
+```
+
+Every reply must pass the software frame/CRC checks and match the expected
+address, session, sequence and acknowledgment. Receiving arbitrary RF data
+does not trigger a response. If an expected reply never arrives, a timeout
+retires the session: A retries with a new PING and session ID, while B listens.
+See [Handshake and recovery](#handshake-and-recovery) for wraparound and duplicate
+handling.
 
 ## Wiring and build
 
@@ -246,35 +295,130 @@ gates transmission. `HEALTH` reports cumulative accepted frames, CRC failures,
 rejections, decoder timeouts and reply timeouts. These status lines print once
 per second outside TX/ISR execution. Reception resumes before TX-completion logs.
 
-Why the initial trace appeared to stop: a roughly 340 ms TX at the default 5%
-budget requires `340 * 19 = 6460 ms` of silence. If B's valid reply arrives 488 ms
-after A finishes TX, A still waits about 5972 ms before sending sequence 2.
-The supplied logs cover only a few seconds of this wait, with no CRC errors,
-buffer overruns or reply timeouts. Keep both monitors open past that countdown;
-the following send, a timeout/fault, or the 60-second STOP will now be explicit.
-The exact cooldown depends on measured TX/setup/exit duration; the firmware
-prints its actual remaining wait rather than assuming these example numbers.
+### A captured exchange, step by step
 
-Illustrative new log format (not captured hardware evidence):
+The excerpts below come from the supplied A/B device logs for session
+`fdd0e3f7`. Repeated status lines are omitted. Paired lines are grouped by
+protocol event, **not sorted across the two boards' independent clocks**.
+`SENT` is emitted after returning to RX, about 24 ms after TX completion in
+this run; it is not the timestamp of the first or last transmitted bit.
+
+**1. A starts; B listens.** Both radios verify their configuration, then select
+complementary transmit/receive frequencies. A creates a session; B waits for
+A's first packet.
 
 ```text
-[A 530 ms] SENT: PING A -> B: sequence=0, acknowledgment=none, session=12345678
-[B 550 ms] RECEIVED: PING A -> B: sequence=0, acknowledgment=none, session=12345678
-[B 1040 ms] SENT: PONG_PING B -> A: sequence=1, acknowledges=0, session=12345678
-[A 988 ms] RECEIVED: PONG_PING B -> A: sequence=1, acknowledges=0, session=12345678
-[A 988 ms] REPLY: Accepted B's reply 488 ms after our TX completed
-[A 988 ms] WAIT: PONG_PING sequence=2 queued; send in 5972 ms (airtime cooldown=5972 ms, turnaround=150 ms); listening to B
-[A 1988 ms] WAIT: PONG_PING sequence=2 queued; send in 4972 ms (airtime cooldown=4972 ms, turnaround=0 ms); listening to B
-...
-[A 7330 ms] SENT: PONG_PING A -> B: sequence=2, acknowledges=1, session=12345678
-...
-[A 60000 ms] STOP: RF run reached 60000 ms; requested radio IDLE. Reset both boards to run again
+[A 16 ms] START: Node A (initiator), peer B; TX=433920000 Hz, RX=433500000 Hz, frequency correction=71 steps
+[B 16 ms] START: Node B (responder), peer A; TX=433500000 Hz, RX=433920000 Hz, frequency correction=0 steps
+[B 76 ms] LISTEN: Receiver settled on 433920000 Hz; waiting for A's initial PING
+[A 76 ms] SESSION: Starting exchange with B; new session=fdd0e3f7
 ```
 
-`REPLY` elapsed time is printed only for an accepted response to an outstanding
-TX. It includes peer silence and turnaround, not just RF propagation. B's first
-PING is logged as a new session, without presenting time since boot as latency.
-Host serial monitors can buffer output.
+**2. PING establishes the exchange.** A's sequence 0 has no acknowledgment
+because no peer message has arrived yet. B accepts it and schedules sequence 1
+once the 150 ms turnaround has elapsed. The log below is printed 10 ms after
+reception, so it shows 140 ms remaining.
+
+```text
+[A 588 ms] SENT: PING A -> B: sequence=0, acknowledgment=none, session=fdd0e3f7
+[B 532 ms] RECEIVED: PING A -> B: sequence=0, acknowledgment=none, session=fdd0e3f7
+[B 532 ms] SESSION: Accepted A's new session; preparing first response
+[B 542 ms] WAIT: PONG_PING sequence=1 queued; send in 140 ms (airtime cooldown=0 ms, turnaround=140 ms); listening to A
+```
+
+B's smaller timestamp does not mean it received before A transmitted: these
+are different uptime clocks, and A prints `SENT` after finishing its RX retune.
+
+**3. B acknowledges sequence 0 and requests the next reply.** A accepts
+sequence 1 with ACK 0 in the same session. Its measured response time is 487 ms,
+consistent with a 150 ms peer turnaround plus the 332.8 ms frame and overhead.
+A then queues sequence 2, but its own airtime budget delays transmission.
+
+```text
+[B 1044 ms] SENT: PONG_PING B -> A: sequence=1, acknowledges=0, session=fdd0e3f7
+[A 1051 ms] RECEIVED: PONG_PING B -> A: sequence=1, acknowledges=0, session=fdd0e3f7
+[A 1051 ms] REPLY: Accepted B's reply 487 ms after our TX completed
+[A 1061 ms] WAIT: PONG_PING sequence=2 queued; send in 5944 ms (airtime cooldown=5944 ms, turnaround=140 ms); listening to B
+```
+
+**4. The cooldown expires and A sends the queued reply.** The countdown
+continues decreasing while the receiver stays active. It is a scheduled wait,
+not a missing reply or a blocked state machine. B receives sequence 2 with
+ACK 1, then queues sequence 3.
+
+```text
+[A 6000 ms] WAIT: PONG_PING sequence=2 queued; send in 1005 ms (airtime cooldown=1005 ms, turnaround=0 ms); listening to B
+[A 7000 ms] WAIT: PONG_PING sequence=2 queued; send in 5 ms (airtime cooldown=5 ms, turnaround=0 ms); listening to B
+[A 7384 ms] SENT: PONG_PING A -> B: sequence=2, acknowledges=1, session=fdd0e3f7
+[B 7329 ms] RECEIVED: PONG_PING A -> B: sequence=2, acknowledges=1, session=fdd0e3f7
+[B 7329 ms] REPLY: Accepted A's reply 6309 ms after our TX completed
+[B 7339 ms] WAIT: PONG_PING sequence=3 queued; send in 140 ms (airtime cooldown=122 ms, turnaround=140 ms); listening to A
+```
+
+“Send in 5 ms” means the earliest permitted start of transmission. `SENT`
+appears later, after the approximately 333 ms frame, radio transitions and
+foreground logging/scheduling overhead.
+
+**5. The same exchange repeats.** Each new packet acknowledges the preceding
+one. Both boards retain the session ID, and the sequence advances without a
+restart or a repeated initial PING.
+
+| Sequence | Direction | Acknowledges | Sender's `SENT` uptime | Receiver's `RECEIVED` uptime |
+| --- | --- | --- | --- | --- |
+| 0 (PING) | A → B | None | A: 588 ms | B: 532 ms |
+| 1 | B → A | 0 | B: 1044 ms | A: 1051 ms |
+| 2 | A → B | 1 | A: 7384 ms | B: 7329 ms |
+| 3 | B → A | 2 | B: 7841 ms | A: 7848 ms |
+| 4 | A → B | 3 | A: 14163 ms | B: 14107 ms |
+| 5 | B → A | 4 | B: 14620 ms | A: 14627 ms |
+| 6 | A → B | 5 | A: 20942 ms | B: 20886 ms |
+| 7 | B → A | 6 | B: 21399 ms | A: 21406 ms |
+
+The timestamps in different columns are not directly subtractable. Within
+either board, successive `SENT` entries are about 6.78 seconds apart. By the
+end of the excerpt, each board has accepted four frames, and A has queued
+sequence 8 for its next permitted transmission:
+
+```text
+[A 21406 ms] RECEIVED: PONG_PING B -> A: sequence=7, acknowledges=6, session=fdd0e3f7
+[A 21416 ms] WAIT: PONG_PING sequence=8 queued; send in 5943 ms (airtime cooldown=5943 ms, turnaround=140 ms); listening to B
+[A 24173 ms] HEALTH: Accepted=4, bad CRC=0, rejected=0, incomplete frames=0, reply timeouts=0
+[B 23409 ms] HEALTH: Accepted=4, bad CRC=0, rejected=0, incomplete frames=0, reply timeouts=0
+[A 23183 ms] TIMING: Longest sample interval=136 us (target 104 us); buffer overruns=0
+[B 23419 ms] TIMING: Longest sample interval=108 us (target 104 us); buffer overruns=0
+```
+
+The largest reported sample interval in the supplied excerpt is 136 us on A,
+below the firmware's 156 us fault threshold. Neither board reports a buffer
+overrun. This supports successful decoding during the excerpt; the timer logs
+are not oscilloscope measurements of RF edges or a long-term reliability test.
+
+### Why A and B report different reply times
+
+A reports replies after about 487–488 ms, while B reports 6290–6309 ms. The
+asymmetry comes from where the boards are in their **individual** cooldowns:
+
+- A receives B's response soon after A's own transmission. It must wait almost
+  another six seconds before replying, so B spends that time listening.
+- When A finally replies, B's cooldown is almost finished. B only needs roughly
+  the 150 ms turnaround before sending its approximately 333 ms frame back.
+
+At a 5% budget, every charged millisecond of TX requires 19 ms of silence.
+For A's first transmission, the `LISTEN` log shows 6417 ms of cooldown remaining
+24 ms after TX completion: total silence is 6441 ms, corresponding to 339 ms
+of charged TX/setup/exit time. The exact wait is measured by the firmware;
+`send in` is the larger of the remaining cooldown and turnaround, not their sum.
+B's longest observed reply wait, 6309 ms, still leaves 3691 ms before its
+10000 ms timeout. No timeout or recovery occurs in this captured exchange.
+
+`REPLY` elapsed time includes peer silence and turnaround, not just RF
+propagation. It is printed only for an accepted response to an outstanding TX;
+B's first PING is instead logged as a new session. Host monitors can buffer
+output without changing the device timestamps.
+
+The default 60000 ms run limit will intentionally stop further RF activity.
+The supplied excerpt ends around 24 seconds and does **not** include that STOP
+or a disconnect/reboot recovery test. Those remain separate bench checks.
 
 ## Host verification and comparison
 
