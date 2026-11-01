@@ -11,6 +11,7 @@ experiment IDs; `base` identifies the formerly unsuffixed example.
 | [4](experiments/4/) | CC1101 SPI VERSION register check | `esp32dev` | Arduino SPI |
 | [5](experiments/5/) | CC1101 OOK pulse generator with calibration | `esp32_a`, `esp32_b` | Arduino SPI |
 | [pong](experiments/pong/) | Two-node CC1101 ping/pong | `esp32_a`, `esp32_b` | RadioLib |
+| [am-roundtrip](experiments/am-roundtrip/) | Two-node CC1101 AM/OOK payload echo | `esp32_a`, `esp32_b` | RadioLib 7.1.2 |
 
 ## Build, upload, and monitor
 
@@ -24,7 +25,7 @@ pio run -d experiments/5 -e esp32_a -t upload
 pio device monitor -d experiments/5 -e esp32_a
 ```
 
-Experiments `5` and `pong` retain the original `/dev/ttyUSB0` (A) and
+Experiments `5`, `pong`, and `am-roundtrip` use `/dev/ttyUSB0` (A) and
 `/dev/ttyUSB1` (B) ports. For a different machine, override the upload port with
 `--upload-port PORT` and the monitor port with `--port PORT`.
 There is no root PlatformIO project: choose the experiment to build.
